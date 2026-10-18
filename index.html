@@ -1,0 +1,613 @@
+/* 
+Yes, I know there is a better way to do this, but I ain' bothering with doin' allat.
+So this will remain as is in its single file ways.
+*/
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flappy Quinn</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    /* ── Name entry overlay ─────────────────────────────────────────────────── */
+    #nameOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(10,10,30,0.88);
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      gap: 18px;
+      z-index: 10;
+      font-family: 'Segoe UI', sans-serif;
+      color: #fff;
+    }
+    #nameOverlay.visible { display: flex; }
+    #nameOverlay h2 {
+      font-size: 26px;
+      color: #00c8ff;
+      text-shadow: 0 0 14px rgba(0,200,255,0.6);
+    }
+    #nameOverlay p { font-size: 15px; color: #aaa; }
+    #nameInput {
+      width: 120px;
+      text-align: center;
+      font-size: 32px;
+      font-family: 'Segoe UI', monospace;
+      letter-spacing: 10px;
+      text-transform: uppercase;
+      background: #111;
+      border: 2px solid #00c8ff;
+      color: #fff;
+      padding: 10px 8px;
+      border-radius: 6px;
+      outline: none;
+    }
+    #nameSubmit {
+      padding: 10px 32px;
+      font-size: 17px;
+      background: #00c8ff;
+      color: #000;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: 'Segoe UI', sans-serif;
+      font-weight: bold;
+    }
+    #nameSubmit:hover { background: #33d6ff; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <div id="nameOverlay">
+    <h2>NEW HIGH SCORE!</h2>
+    <p>Enter your 4-character name</p>
+    <input id="nameInput" type="text" maxlength="4" autocomplete="off" spellcheck="false" />
+    <button id="nameSubmit">CONFIRM</button>
+  </div>
+
+  <script>
+    // ── Supabase config ────────────────────────────────────────────────────────
+    const SUPA_URL = 'https://cgwgosvvwbncxvazrzqp.supabase.co/';
+    const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNnd2dvc3Z2d2JuY3h2YXpyenFwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIyNzg2MjcsImV4cCI6MjEwNzg1NDYyN30.oe-wBZRVeCKyZBHJm3Ke6iFu3HzewIUfcVm91fofuJ0';
+
+    // ── Canvas ─────────────────────────────────────────────────────────────────
+    const canvas = document.getElementById('c');
+    const ctx    = canvas.getContext('2d');
+    const W = 400;
+    const H = 600;
+    canvas.width  = W;
+    canvas.height = H;
+
+    // ── Constants ──────────────────────────────────────────────────────────────
+    const GRAVITY       = 0.45;
+    const FLAP_FORCE    = -8.5;
+    const PIPE_SPEED    = 2.8;
+    const PIPE_WIDTH    = 64;
+    const PIPE_GAP      = 155;
+    const PIPE_INTERVAL = 1600;
+    const GROUND_H      = 70;
+    const BIRD_X        = 90;
+    const BIRD_W        = 44;
+    const BIRD_H        = 44;
+    const MAX_SCORES    = 5;
+
+    // ── Colors ─────────────────────────────────────────────────────────────────
+    const C = {
+      accent:  '#00c8ff',
+      gold:    '#ffd700',
+      silver:  '#c0c0c0',
+      bronze:  '#cd7f32',
+      overlay: 'rgba(10,10,30,0.82)',
+    };
+
+    // ── Supabase helpers ───────────────────────────────────────────────────────
+    let cachedScores = [];
+
+    async function fetchScores() {
+      try {
+        const res = await fetch(
+          `${SUPA_URL}/rest/v1/scores?order=score.desc&limit=${MAX_SCORES}`,
+          { headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` } }
+        );
+        if (!res.ok) return;
+        cachedScores = await res.json();
+      } catch (e) {
+        console.warn('Could not fetch scores:', e);
+      }
+    }
+
+    async function submitScore(name, playerScore) {
+      try {
+        await fetch(`${SUPA_URL}/rest/v1/scores`, {
+          method:  'POST',
+          headers: {
+            apikey:         SUPA_KEY,
+            Authorization:  `Bearer ${SUPA_KEY}`,
+            'Content-Type': 'application/json',
+            Prefer:         'return=minimal',
+          },
+          body: JSON.stringify({
+            name:  name.toUpperCase().slice(0, 4),
+            score: playerScore,
+          }),
+        });
+        await fetchScores();
+      } catch (e) {
+        console.warn('Could not submit score:', e);
+      }
+    }
+
+    function isTopScore(playerScore) {
+      if (cachedScores.length < MAX_SCORES) return true;
+      return playerScore > cachedScores[cachedScores.length - 1].score;
+    }
+
+    // ── Name entry UI ──────────────────────────────────────────────────────────
+    const nameOverlay = document.getElementById('nameOverlay');
+    const nameInput   = document.getElementById('nameInput');
+    const nameSubmit  = document.getElementById('nameSubmit');
+
+    function openNameEntry(onConfirm) {
+      nameInput.value = '';
+      nameOverlay.classList.add('visible');
+      nameInput.focus();
+
+      function confirm() {
+        const name = nameInput.value.trim();
+        if (name.length === 0) return;
+        nameOverlay.classList.remove('visible');
+        nameSubmit.removeEventListener('click', confirm);
+        nameInput.removeEventListener('keydown', onKey);
+        onConfirm(name);
+      }
+
+      function onKey(e) {
+        if (!/^[a-zA-Z0-9]$/.test(e.key) && e.key !== 'Backspace') e.preventDefault();
+        if (e.key === 'Enter') confirm();
+      }
+
+      nameSubmit.addEventListener('click', confirm);
+      nameInput.addEventListener('keydown', onKey);
+    }
+
+    // ── Pipe image pool ────────────────────────────────────────────────────────
+    const PIPE_SOURCES = ['Hod.png', 'Yesod.png', 'Netzach.png'];
+    const pipeImgs = PIPE_SOURCES.map(src => {
+      const img   = new Image();
+      img.src     = src;
+      img.ready   = false;
+      img.onload  = () => { img.ready = true; };
+      img.onerror = () => { img.ready = false; };
+      return img;
+    });
+    function randomPipeImg() {
+      return pipeImgs[Math.floor(Math.random() * pipeImgs.length)];
+    }
+
+    // ── Bird (player) image ────────────────────────────────────────────────────
+    const birdImg    = new Image();
+    birdImg.src      = 'quinn.png';
+    let imgReady     = false;
+    birdImg.onload   = () => { imgReady = true; };
+    birdImg.onerror  = () => { imgReady = false; };
+
+    // ── Floor image ────────────────────────────────────────────────────────────
+    const floorImg   = new Image();
+    floorImg.src     = 'bird.png';
+    let floorReady   = false;
+    floorImg.onload  = () => { floorReady = true; };
+    floorImg.onerror = () => { floorReady = false; };
+
+    // ── Background image ───────────────────────────────────────────────────────
+    const bgImg   = new Image();
+    bgImg.src     = 'lobcorp.png';
+    let bgReady   = false;
+    bgImg.onload  = () => { bgReady = true; };
+    bgImg.onerror = () => { bgReady = false; };
+
+    // ── Music ──────────────────────────────────────────────────────────────────
+    const music      = new Audio('bbn.mp3');
+    music.loop       = true;
+    music.volume     = 0.6;
+    let musicStarted = false;
+
+    function ensureMusic() {
+      if (musicStarted) return;
+      music.play().then(() => { musicStarted = true; }).catch(() => {});
+    }
+    function stopMusic()   { music.pause(); music.currentTime = 0; musicStarted = false; }
+    function resumeMusic() { ensureMusic(); }
+
+    // ── Game state ─────────────────────────────────────────────────────────────
+    // 'idle' | 'playing' | 'dying' | 'dead'
+    let state, bird, pipes, score, lastPipeTime, flashTimer;
+    let waitingForName = false;
+
+    function initGame() {
+      state          = 'idle';
+      bird           = { x: BIRD_X, y: H / 2 - 20, vy: 0, rot: 0 };
+      pipes          = [];
+      score          = 0;
+      lastPipeTime   = 0;
+      flashTimer     = 0;
+      waitingForName = false;
+    }
+
+    function handleDeath() {
+      if (isTopScore(score)) {
+        waitingForName = true;
+        openNameEntry(async name => {
+          await submitScore(name, score);
+          waitingForName = false;
+          state = 'dead';
+        });
+      } else {
+        state = 'dead';
+      }
+    }
+
+    // ── Pipe factory ───────────────────────────────────────────────────────────
+    function spawnPipe() {
+      const minTop = 60;
+      const maxTop = H - GROUND_H - PIPE_GAP - 60;
+      const topH   = Math.floor(Math.random() * (maxTop - minTop + 1)) + minTop;
+      pipes.push({ x: W + PIPE_WIDTH, topH, passed: false, img: randomPipeImg() });
+    }
+
+    // ── Input ──────────────────────────────────────────────────────────────────
+    function flap() {
+      if (waitingForName) return;
+      ensureMusic();
+      if (state === 'dead')  { stopMusic(); initGame(); resumeMusic(); return; }
+      if (state === 'dying') return;
+      if (state === 'idle')  state = 'playing';
+      bird.vy = FLAP_FORCE;
+    }
+
+    document.addEventListener('keydown', e => {
+      if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); flap(); }
+    });
+    canvas.addEventListener('click',      () => flap());
+    canvas.addEventListener('touchstart', e => { e.preventDefault(); flap(); }, { passive: false });
+
+    // ── Collision ──────────────────────────────────────────────────────────────
+    function overlap(ax, ay, aw, ah, bx, by, bw, bh) {
+      return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+    }
+
+    function checkCollisions() {
+      const pad = 6;
+      const bx  = bird.x - BIRD_W / 2 + pad;
+      const by  = bird.y - BIRD_H / 2 + pad;
+      const bw  = BIRD_W - pad * 2;
+      const bh  = BIRD_H - pad * 2;
+
+      if (bird.y + BIRD_H / 2 >= H - GROUND_H || bird.y - BIRD_H / 2 <= 0) return true;
+      for (const p of pipes) {
+        if (overlap(bx, by, bw, bh, p.x, 0, PIPE_WIDTH, p.topH)) return true;
+        if (overlap(bx, by, bw, bh, p.x, p.topH + PIPE_GAP, PIPE_WIDTH, H - GROUND_H - p.topH - PIPE_GAP)) return true;
+      }
+      return false;
+    }
+
+    // ── Update ─────────────────────────────────────────────────────────────────
+    function update(now) {
+      if (state !== 'playing') return;
+
+      bird.vy += GRAVITY;
+      bird.y  += bird.vy;
+
+      const targetRot = Math.min(Math.max(bird.vy * 0.065, -0.45), 1.2);
+      bird.rot += (targetRot - bird.rot) * 0.18;
+
+      if (lastPipeTime === 0 || now - lastPipeTime >= PIPE_INTERVAL) {
+        spawnPipe();
+        lastPipeTime = now;
+      }
+
+      for (const p of pipes) {
+        p.x -= PIPE_SPEED;
+        if (!p.passed && p.x + PIPE_WIDTH < bird.x - BIRD_W / 2) {
+          p.passed = true;
+          score++;
+        }
+      }
+
+      pipes = pipes.filter(p => p.x + PIPE_WIDTH > 0);
+
+      if (checkCollisions()) {
+        state      = 'dying';
+        flashTimer = 8;
+        bird.vy    = -5;
+        stopMusic();
+        fetchScores();
+      }
+    }
+
+    // ── Draw helpers ───────────────────────────────────────────────────────────
+    function drawBackground() {
+      if (bgReady) {
+        const iw    = bgImg.naturalWidth;
+        const ih    = bgImg.naturalHeight;
+        const scale = Math.max(W / iw, H / ih);
+        const dw    = iw * scale;
+        const dh    = ih * scale;
+        ctx.drawImage(bgImg, (W - dw) / 2, (H - dh) / 2, dw, dh);
+      } else {
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, '#0f3460');
+        g.addColorStop(1, '#16213e');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    function drawGround() {
+      if (floorReady) {
+        ctx.drawImage(floorImg, 0, H - GROUND_H, W, GROUND_H);
+      } else {
+        ctx.fillStyle = 'rgba(5,30,15,0.82)';
+        ctx.fillRect(0, H - GROUND_H, W, GROUND_H);
+        ctx.fillStyle = '#0d3d22';
+        ctx.fillRect(0, H - GROUND_H, W, 4);
+      }
+    }
+
+    function drawPipeSegment(img, x, y, w, h, flip) {
+      if (img && img.ready) {
+        ctx.save();
+        if (flip) {
+          ctx.translate(x + w / 2, y + h / 2);
+          ctx.scale(1, -1);
+          ctx.drawImage(img, -w / 2, -h / 2, w, h);
+        } else {
+          ctx.drawImage(img, x, y, w, h);
+        }
+        ctx.restore();
+      } else {
+        ctx.fillStyle = '#1db954';
+        ctx.fillRect(x, y, w, h);
+        ctx.fillStyle = '#158a3a';
+        ctx.fillRect(x, y, 6, h);
+      }
+    }
+
+    function drawPipe(p) {
+      const capH = 16, capOW = 6, img = p.img;
+      const topBodyH = p.topH - capH;
+      if (topBodyH > 0) drawPipeSegment(img, p.x, 0, PIPE_WIDTH, topBodyH, true);
+      drawPipeSegment(img, p.x - capOW, p.topH - capH, PIPE_WIDTH + capOW * 2, capH, true);
+      const botY     = p.topH + PIPE_GAP;
+      const botBodyH = H - GROUND_H - botY;
+      drawPipeSegment(img, p.x - capOW, botY, PIPE_WIDTH + capOW * 2, capH, false);
+      if (botBodyH - capH > 0) drawPipeSegment(img, p.x, botY + capH, PIPE_WIDTH, botBodyH - capH, false);
+    }
+
+    function drawBird() {
+      ctx.save();
+      ctx.translate(bird.x, bird.y);
+      ctx.rotate(bird.rot);
+      if (imgReady) {
+        ctx.drawImage(birdImg, -BIRD_W / 2, -BIRD_H / 2, BIRD_W, BIRD_H);
+      } else {
+        ctx.fillStyle = '#f5d020';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, BIRD_W / 2, BIRD_H / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawScore() {
+      ctx.textAlign   = 'center';
+      ctx.fillStyle   = '#ffffff';
+      ctx.font        = 'bold 38px "Segoe UI", sans-serif';
+      ctx.shadowColor = 'rgba(0,0,0,0.8)';
+      ctx.shadowBlur  = 10;
+      ctx.fillText(score, W / 2, 58);
+      ctx.shadowBlur  = 0;
+    }
+
+    function drawIdleScreen() {
+      ctx.fillStyle = C.overlay;
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.textAlign   = 'center';
+      ctx.fillStyle   = C.accent;
+      ctx.font        = 'bold 40px "Segoe UI", sans-serif';
+      ctx.shadowColor = 'rgba(0,200,255,0.5)';
+      ctx.shadowBlur  = 14;
+      ctx.fillText('FLAPPY QUINN', W / 2, H / 2 - 60);
+      ctx.shadowBlur  = 0;
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font      = '20px "Segoe UI", sans-serif';
+      ctx.fillText('Space / Click / Tap to start', W / 2, H / 2);
+
+      ctx.fillStyle = '#aaaaaa';
+      ctx.font      = '16px "Segoe UI", sans-serif';
+      ctx.fillText('Avoid the pipes!', W / 2, H / 2 + 32);
+    }
+
+    // Medal color for leaderboard position
+    function rankColor(i) {
+      if (i === 0) return C.gold;
+      if (i === 1) return C.silver;
+      if (i === 2) return C.bronze;
+      return '#cccccc';
+    }
+
+    function drawDeadScreen() {
+      ctx.fillStyle = C.overlay;
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.textAlign   = 'center';
+      ctx.fillStyle   = '#ff4444';
+      ctx.font        = 'bold 38px "Segoe UI", sans-serif';
+      ctx.shadowColor = 'rgba(255,60,60,0.6)';
+      ctx.shadowBlur  = 14;
+      ctx.fillText('GAME OVER', W / 2, 62);
+      ctx.shadowBlur  = 0;
+
+      // ── Current run score ───────────────────────────────────────────────────
+      ctx.fillStyle = '#ffffff';
+      ctx.font      = 'bold 20px "Segoe UI", sans-serif';
+      ctx.fillText(`Score: ${score}`, W / 2, 102);
+
+      // ── Leaderboard panel ───────────────────────────────────────────────────
+      const panelX = 40;
+      const panelY = 124;
+      const panelW = W - 80;
+      const panelH = 218;
+
+      // Panel background
+      ctx.fillStyle   = 'rgba(0,0,0,0.45)';
+      ctx.strokeStyle = C.accent;
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(panelX, panelY, panelW, panelH, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      // Panel heading
+      ctx.fillStyle = C.accent;
+      ctx.font      = 'bold 15px "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('TOP SCORES', W / 2, panelY + 22);
+
+      // Divider
+      ctx.strokeStyle = 'rgba(0,200,255,0.3)';
+      ctx.lineWidth   = 1;
+      ctx.beginPath();
+      ctx.moveTo(panelX + 12, panelY + 30);
+      ctx.lineTo(panelX + panelW - 12, panelY + 30);
+      ctx.stroke();
+
+      if (cachedScores.length === 0) {
+        ctx.fillStyle = '#666';
+        ctx.font      = '14px "Segoe UI", sans-serif';
+        ctx.fillText('No scores yet', W / 2, panelY + 60);
+      } else {
+        const rowH    = 34;
+        const startY  = panelY + 52;
+
+        for (let i = 0; i < cachedScores.length; i++) {
+          const entry = cachedScores[i];
+          const y     = startY + i * rowH;
+          const color = rankColor(i);
+
+          // Highlight the row if this run's score matches this entry
+          // (only highlight if the player just earned this exact slot)
+          if (entry.score === score && isNewEntry(i)) {
+            ctx.fillStyle = 'rgba(255,215,0,0.10)';
+            ctx.beginPath();
+            ctx.roundRect(panelX + 8, y - 14, panelW - 16, rowH - 4, 4);
+            ctx.fill();
+          }
+
+          // Rank number
+          ctx.fillStyle  = color;
+          ctx.font       = 'bold 15px "Segoe UI", sans-serif';
+          ctx.textAlign  = 'left';
+          ctx.fillText(`#${i + 1}`, panelX + 18, y);
+
+          // Name
+          ctx.fillStyle  = '#ffffff';
+          ctx.font       = '15px "Segoe UI", monospace';
+          ctx.textAlign  = 'left';
+          ctx.fillText(entry.name, panelX + 52, y);
+
+          // Score (right-aligned)
+          ctx.fillStyle  = color;
+          ctx.font       = 'bold 15px "Segoe UI", sans-serif';
+          ctx.textAlign  = 'right';
+          ctx.fillText(entry.score, panelX + panelW - 14, y);
+        }
+      }
+
+      // ── Restart prompt ──────────────────────────────────────────────────────
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#cccccc';
+      ctx.font      = '16px "Segoe UI", sans-serif';
+      ctx.fillText('Space / Click / Tap to restart', W / 2, panelY + panelH + 34);
+    }
+
+    // Returns true if the score at index i was just submitted this run.
+    // Used to decide whether to highlight a leaderboard row.
+    let newEntryIndex = -1;
+    function isNewEntry(i) { return i === newEntryIndex; }
+
+    // ── Main loop ──────────────────────────────────────────────────────────────
+    function loop(now) {
+      update(now);
+
+      if (flashTimer > 0) {
+        drawBackground();
+        for (const p of pipes) drawPipe(p);
+        drawGround();
+        drawBird();
+        ctx.fillStyle = `rgba(255,255,255,${(flashTimer / 8) * 0.6})`;
+        ctx.fillRect(0, 0, W, H);
+        flashTimer--;
+        // Once the flash is done, hand off to handleDeath so the name
+        // dialog (if needed) opens exactly once.
+        if (flashTimer === 0) handleDeath();
+      } else {
+        drawBackground();
+        for (const p of pipes) drawPipe(p);
+        drawGround();
+        drawBird();
+        if (state === 'playing') drawScore();
+        if (state === 'idle')    drawIdleScreen();
+        if (state === 'dead')    drawDeadScreen();
+      }
+
+      requestAnimationFrame(loop);
+    }
+
+    // ── Updated handleDeath — tracks which row the new entry landed in ─────────
+    function handleDeath() {
+      if (isTopScore(score)) {
+        // Work out where this score will land before submitting so we can
+        // highlight that row on the game over screen afterwards.
+        newEntryIndex = cachedScores.findIndex(e => score > e.score);
+        if (newEntryIndex === -1) newEntryIndex = cachedScores.length;
+
+        waitingForName = true;
+        openNameEntry(async name => {
+          await submitScore(name, score);
+          waitingForName = false;
+          state = 'dead';
+        });
+      } else {
+        newEntryIndex = -1;
+        state = 'dead';
+      }
+    }
+
+    // ── Boot ───────────────────────────────────────────────────────────────────
+    // Pre-load the leaderboard so it is ready the first time the game over
+    // screen is shown without needing a network round-trip at that moment.
+    fetchScores();
+    initGame();
+    requestAnimationFrame(loop);
+
+  </script>
+</body>
+</html>
